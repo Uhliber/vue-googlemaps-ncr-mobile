@@ -1,6 +1,10 @@
-# NCR Signal Map — vue-googlemaps-ncr-mobile
+# NCR Mobile Networks Signal Map
+
+**Live Demo:** [NCR Mobile Networks Signal Map Screenshot](https://vue-googlemaps-ncr-mobile.pages.dev/)
 
 A Vue 3 application that visualizes mobile network signal strength across Metro Manila (NCR) using a heatmap powered by the Google Maps JavaScript API.
+
+DEMO: 
 
 ---
 

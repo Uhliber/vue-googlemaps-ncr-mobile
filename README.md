@@ -4,8 +4,6 @@
 
 A Vue 3 application that visualizes mobile network signal strength across Metro Manila (NCR) using a heatmap powered by the Google Maps JavaScript API.
 
-DEMO: 
-
 ---
 
 ## Project Overview

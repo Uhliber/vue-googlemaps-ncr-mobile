@@ -8,11 +8,6 @@ export interface Signal {
   strength: number
 }
 
-export interface HeatmapPoint {
-  location: google.maps.LatLng
-  weight: number
-}
-
 export const NETWORK_LABELS: Record<Network, string> = {
   globe: 'Globe',
   smart: 'Smart',

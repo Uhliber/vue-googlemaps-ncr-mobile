@@ -1,5 +1,5 @@
-import { ref, computed, watch } from 'vue'
-import type { Network, Signal, HeatmapPoint } from '@/types/signal'
+import { ref, watch } from 'vue'
+import type { Network, Signal } from '@/types/signal'
 import { fetchSignalsByNetwork } from '@/services/api'
 
 export function useSignals(initialNetwork: Network = 'globe') {
@@ -7,14 +7,6 @@ export function useSignals(initialNetwork: Network = 'globe') {
   const signals = ref<Signal[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
-
-  const heatmapPoints = computed<HeatmapPoint[]>(() => {
-    if (!window.google?.maps) return []
-    return signals.value.map((s) => ({
-      location: new window.google.maps.LatLng(s.lat, s.lng),
-      weight: s.strength,
-    }))
-  })
 
   async function loadSignals(network: Network) {
     isLoading.value = true
@@ -38,7 +30,6 @@ export function useSignals(initialNetwork: Network = 'globe') {
   return {
     activeNetwork,
     signals,
-    heatmapPoints,
     isLoading,
     error,
     selectNetwork,

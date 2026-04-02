@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, shallowRef } from 'vue'
-import type { HeatmapPoint } from '@/types/signal'
+import type { Signal } from '@/types/signal'
 import { useGoogleMaps } from '@/composables/useGoogleMaps'
+import { createHeatmapOverlay, type HeatmapOverlayInstance } from '@/utils/CanvasHeatmapOverlay'
 
 const props = defineProps<{
-  heatmapPoints: HeatmapPoint[]
+  signals: Signal[]
   isLoading: boolean
 }>()
 
 const mapContainer = ref<HTMLElement | null>(null)
 const mapInstance = shallowRef<google.maps.Map | null>(null)
-const heatmapLayer = shallowRef<google.maps.visualization.HeatmapLayer | null>(null)
+const heatmapOverlay = shallowRef<HeatmapOverlayInstance | null>(null)
 
 const { loadGoogleMaps, mapsState, mapsError } = useGoogleMaps()
 
@@ -34,54 +35,37 @@ function initMap() {
     ],
   })
 
-  heatmapLayer.value = new window.google.maps.visualization.HeatmapLayer({
-    data: [],
-    map: mapInstance.value,
-    radius: 35,
-    opacity: 0.75,
-    gradient: [
-      'rgba(0, 255, 255, 0)',
-      'rgba(0, 255, 255, 1)',
-      'rgba(0, 191, 255, 1)',
-      'rgba(0, 127, 255, 1)',
-      'rgba(0, 63, 255, 1)',
-      'rgba(0, 255, 0, 1)',
-      'rgba(127, 255, 0, 1)',
-      'rgba(255, 255, 0, 1)',
-      'rgba(255, 127, 0, 1)',
-      'rgba(255, 63, 0, 1)',
-      'rgba(255, 0, 0, 1)',
-    ],
-  })
+  heatmapOverlay.value = createHeatmapOverlay({ radius: 35, opacity: 0.75 })
+  heatmapOverlay.value.setMap(mapInstance.value!)
 }
 
-function updateHeatmap(points: HeatmapPoint[]) {
-  if (!heatmapLayer.value || !window.google?.maps) return
-  const data = points.map((p) => ({ location: p.location, weight: p.weight }))
-  heatmapLayer.value.setData(data)
+function updateHeatmap(signals: Signal[]) {
+  if (!heatmapOverlay.value) return
+  heatmapOverlay.value.setData(
+    signals.map((s) => ({ lat: s.lat, lng: s.lng, weight: s.strength })),
+  )
 }
 
 watch(
-  () => props.heatmapPoints,
-  (points) => {
-    if (mapsState.value === 'ready') updateHeatmap(points)
+  () => props.signals,
+  (signals) => {
+    if (mapsState.value === 'ready') updateHeatmap(signals)
   },
-  { deep: false },
 )
 
 onMounted(async () => {
   try {
     await loadGoogleMaps()
     initMap()
-    if (props.heatmapPoints.length) updateHeatmap(props.heatmapPoints)
+    if (props.signals.length) updateHeatmap(props.signals)
   } catch {
-    // error is surfaced via mapsError ref
+    // error surfaced via mapsError ref
   }
 })
 
 onUnmounted(() => {
-  heatmapLayer.value?.setMap(null)
-  heatmapLayer.value = null
+  heatmapOverlay.value?.setMap(null)
+  heatmapOverlay.value = null
   mapInstance.value = null
 })
 </script>
@@ -89,13 +73,13 @@ onUnmounted(() => {
 <template>
   <div class="relative w-full h-full">
     <!-- Map container -->
-    <div ref="mapContainer" class="w-full h-full rounded-b-2xl overflow-hidden" />
+    <div ref="mapContainer" class="w-full h-full" />
 
-    <!-- Loading overlay -->
+    <!-- Loading overlay (shown while fetching signal data, map is already visible) -->
     <Transition name="fade">
       <div
         v-if="isLoading && mapsState === 'ready'"
-        class="absolute inset-0 bg-slate-900/30 backdrop-blur-[2px] flex items-center justify-center rounded-b-2xl"
+        class="absolute inset-0 bg-slate-900/20 backdrop-blur-[2px] flex items-center justify-center pointer-events-none"
       >
         <div class="bg-white/95 rounded-xl px-5 py-3 shadow-xl flex items-center gap-3">
           <svg
@@ -104,29 +88,18 @@ onUnmounted(() => {
             fill="none"
             viewBox="0 0 24 24"
           >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
           <span class="text-sm font-semibold text-slate-700">Loading signal data…</span>
         </div>
       </div>
     </Transition>
 
-    <!-- Maps loading state -->
+    <!-- Google Maps script loading state -->
     <div
       v-if="mapsState === 'loading'"
-      class="absolute inset-0 bg-slate-100 flex items-center justify-center rounded-b-2xl"
+      class="absolute inset-0 bg-slate-100 flex items-center justify-center"
     >
       <div class="flex flex-col items-center gap-3 text-slate-500">
         <svg
@@ -135,32 +108,19 @@ onUnmounted(() => {
           fill="none"
           viewBox="0 0 24 24"
         >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
         <p class="text-sm font-medium">Loading Google Maps…</p>
       </div>
     </div>
 
-    <!-- API Key Error -->
+    <!-- API Key / load error -->
     <div
       v-if="mapsState === 'error'"
-      class="absolute inset-0 bg-slate-100 flex items-center justify-center rounded-b-2xl p-6"
+      class="absolute inset-0 bg-slate-100 flex items-center justify-center p-6"
     >
-      <div
-        class="bg-white rounded-2xl shadow-lg border border-red-100 p-6 max-w-md w-full text-center"
-      >
+      <div class="bg-white rounded-2xl shadow-lg border border-red-100 p-6 max-w-md w-full text-center">
         <div class="w-14 h-14 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
           <svg class="w-7 h-7 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path
@@ -175,9 +135,7 @@ onUnmounted(() => {
         <p class="text-sm text-slate-500 mb-4 leading-relaxed">{{ mapsError }}</p>
         <div class="bg-slate-50 rounded-lg px-4 py-3 text-left border border-slate-200">
           <p class="text-xs font-mono text-slate-600 font-semibold mb-1">.env</p>
-          <code class="text-xs font-mono text-emerald-700"
-            >VITE_GOOGLE_MAPS_API_KEY=your_key_here</code
-          >
+          <code class="text-xs font-mono text-emerald-700">VITE_GOOGLE_MAPS_API_KEY=your_key_here</code>
         </div>
         <p class="text-xs text-slate-400 mt-3">
           Get a key at

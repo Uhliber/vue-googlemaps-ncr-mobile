@@ -6,13 +6,13 @@ import Legend from '@/components/Legend.vue'
 import { useSignals } from '@/composables/useSignals'
 import { NETWORK_LABELS } from '@/types/signal'
 
-const { activeNetwork, heatmapPoints, isLoading, error, selectNetwork } = useSignals('globe')
+const { activeNetwork, signals, isLoading, error, selectNetwork } = useSignals('globe')
 
-const signalCount = computed(() => heatmapPoints.value.length)
+const signalCount = computed(() => signals.value.length)
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-100 flex flex-col">
+  <div class="h-screen bg-slate-100 flex flex-col overflow-hidden">
     <!-- Header -->
     <header
       class="bg-white border-b border-slate-200 shadow-sm px-4 md:px-6 py-3 flex items-center justify-between z-10 flex-shrink-0"
@@ -90,8 +90,8 @@ const signalCount = computed(() => heatmapPoints.value.length)
     </Transition>
 
     <!-- Map area -->
-    <main class="flex-1 relative overflow-hidden" style="min-height: calc(100vh - 112px)">
-      <MapView :heatmap-points="heatmapPoints" :is-loading="isLoading" />
+    <main class="flex-1 relative overflow-hidden min-h-0">
+      <MapView :signals="signals" :is-loading="isLoading" />
 
       <!-- Legend overlay -->
       <div class="absolute bottom-4 right-4 z-10">

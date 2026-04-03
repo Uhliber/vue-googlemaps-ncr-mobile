@@ -35,7 +35,7 @@ function initMap() {
     ],
   })
 
-  heatmapOverlay.value = createHeatmapOverlay({ radius: 35, opacity: 0.75 })
+  heatmapOverlay.value = createHeatmapOverlay({ radiusMeters: 1200, opacity: 0.6 })
   heatmapOverlay.value.setMap(mapInstance.value!)
 }
 

@@ -1,20 +1,43 @@
 /**
- * Custom canvas-based heatmap overlay for Google Maps.
+ * Canvas-based heatmap overlay for Google Maps.
  * Replaces the deprecated google.maps.visualization.HeatmapLayer (deprecated May 2025).
  *
- * IMPORTANT: The class must NOT extend google.maps.OverlayView at module scope —
- * that reference is evaluated when the file is first imported, before the Maps
- * script has loaded. Instead the class is defined inside a factory function so
- * the prototype chain is set up only at call-time (after Maps is ready).
+ * SMOOTHNESS
+ * ----------
+ * The "jumpy" behaviour in a naive OverlayView happens because:
+ *   1. During zoom/pan, Maps CSS-transforms the entire overlay pane for smooth
+ *      animation.
+ *   2. draw() is only called once — at the end of the animation (on "idle").
+ *   3. So the canvas rides along with the CSS transform, then snaps into its
+ *      new position when draw() finally fires.
  *
- * Rendering strategy:
- *  1. Append a <canvas> to the `overlayLayer` pane, which uses the same
- *     coordinate space as fromLatLngToDivPixel.
- *  2. In draw(), size + position the canvas to cover the current viewport
- *     exactly by projecting the map's SW/NE corners.
- *  3. For each point, draw a weighted radial gradient into an offscreen
- *     "intensity" canvas (black channel = heat).
- *  4. Colorize every pixel via a 256-stop lookup table.
+ * Fix: register a `bounds_changed` listener on the map. That event fires on
+ * every animation frame during pan and zoom, not just at idle. We call draw()
+ * inside requestAnimationFrame so it runs at display refresh rate and the
+ * canvas stays perfectly aligned with the tiles throughout every animation.
+ *
+ * PERFORMANCE
+ * -----------
+ * Two persistent offscreen canvases (_intensityCanvas, _colorCanvas) are
+ * allocated once and reused on every frame. Only their dimensions are updated
+ * when the viewport size changes. This eliminates the per-frame
+ * document.createElement('canvas') cost that caused frame drops.
+ *
+ * A _pendingFrame flag ensures at most one rAF is queued at a time, so rapid
+ * bounds_changed events don't stack up.
+ *
+ * OPACITY / LABEL VISIBILITY
+ * --------------------------
+ * putImageData() ignores globalAlpha — it always writes raw RGBA bytes.
+ * We write colourised pixels to _colorCanvas with putImageData, then use
+ * drawImage() on the visible canvas so globalAlpha is respected and map
+ * labels remain legible beneath the heatmap.
+ *
+ * DEFERRED CLASS CONSTRUCTION
+ * ---------------------------
+ * The class must NOT extend google.maps.OverlayView at module scope because
+ * that reference is evaluated at import time, before the Maps script has loaded.
+ * The factory createHeatmapOverlay() defines the class at call-time.
  */
 
 export interface RawHeatmapPoint {
@@ -24,10 +47,14 @@ export interface RawHeatmapPoint {
 }
 
 export interface CanvasHeatmapOptions {
-  radius?: number
+  /** Geographic coverage radius in metres. Default: 1200 m. */
+  radiusMeters?: number
+  /** Overall heatmap opacity 0–1. Default: 0.6. */
   opacity?: number
   gradient?: string[]
 }
+
+const EARTH_CIRCUMFERENCE_M = 40_075_016.686
 
 const DEFAULT_GRADIENT = [
   'rgba(0, 255, 255, 0)',
@@ -44,47 +71,72 @@ const DEFAULT_GRADIENT = [
 ]
 
 function buildColorRamp(gradient: string[]): Uint8ClampedArray {
-  const rampCanvas = document.createElement('canvas')
-  rampCanvas.width = 1
-  rampCanvas.height = 256
-  const ctx = rampCanvas.getContext('2d')!
+  const c = document.createElement('canvas')
+  c.width = 1
+  c.height = 256
+  const ctx = c.getContext('2d')!
   const grad = ctx.createLinearGradient(0, 0, 0, 256)
-  gradient.forEach((color, i) => {
-    grad.addColorStop(i / (gradient.length - 1), color)
-  })
+  gradient.forEach((color, i) => grad.addColorStop(i / (gradient.length - 1), color))
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, 1, 256)
   return ctx.getImageData(0, 0, 1, 256).data
 }
 
-/**
- * Factory — call this AFTER google.maps has been loaded.
- * Returns a fully initialised overlay instance ready for setMap().
- */
+function metersToPixels(meters: number, zoom: number, latDeg: number): number {
+  const metersPerPixel =
+    (EARTH_CIRCUMFERENCE_M * Math.cos((latDeg * Math.PI) / 180)) / Math.pow(2, zoom + 8)
+  return Math.max(4, meters / metersPerPixel)
+}
+
 export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
-  const radius = options.radius ?? 35
-  const opacity = options.opacity ?? 0.75
+  const radiusMeters = options.radiusMeters ?? 1200
+  const opacity = options.opacity ?? 0.6
   const colorRamp = buildColorRamp(options.gradient ?? DEFAULT_GRADIENT)
 
-  // Class defined here so `google.maps.OverlayView` is resolved at call-time.
   class HeatmapOverlay extends google.maps.OverlayView {
     private _points: RawHeatmapPoint[] = []
     private _canvas: HTMLCanvasElement
+    private _boundsListener: google.maps.MapsEventListener | null = null
+    private _pendingFrame = false
+
+    // Persistent offscreen canvases — allocated once, resized only when the
+    // viewport dimensions change.
+    private _intensityCanvas: HTMLCanvasElement
+    private _colorCanvas: HTMLCanvasElement
 
     constructor() {
       super()
       this._canvas = document.createElement('canvas')
       this._canvas.style.position = 'absolute'
       this._canvas.style.pointerEvents = 'none'
+      this._intensityCanvas = document.createElement('canvas')
+      this._colorCanvas = document.createElement('canvas')
     }
 
     onAdd(): void {
-      const panes = this.getPanes()
-      if (panes) {
-        // overlayLayer sits between base tiles and labels/controls
-        // and shares the fromLatLngToDivPixel coordinate space.
-        panes.overlayLayer.appendChild(this._canvas)
-      }
+      this.getPanes()?.overlayLayer.appendChild(this._canvas)
+
+      // bounds_changed fires continuously during every pan/zoom animation frame.
+      // Scheduling a draw on each event keeps the canvas aligned at all times.
+      this._boundsListener = this.getMap()!.addListener('bounds_changed', () => {
+        this._scheduleFrame()
+      })
+    }
+
+    onRemove(): void {
+      this._boundsListener?.remove()
+      this._boundsListener = null
+      this._canvas.parentNode?.removeChild(this._canvas)
+    }
+
+    /** Queue a draw on the next display frame, ignoring duplicate requests. */
+    private _scheduleFrame(): void {
+      if (this._pendingFrame) return
+      this._pendingFrame = true
+      requestAnimationFrame(() => {
+        this._pendingFrame = false
+        this.draw()
+      })
     }
 
     draw(): void {
@@ -93,9 +145,9 @@ export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
       if (!projection || !map) return
 
       const bounds = map.getBounds()
-      if (!bounds) return
+      const zoom = map.getZoom()
+      if (!bounds || zoom === undefined) return
 
-      // Project viewport corners to div-pixel space.
       const sw = projection.fromLatLngToDivPixel(bounds.getSouthWest())
       const ne = projection.fromLatLngToDivPixel(bounds.getNorthEast())
       if (!sw || !ne) return
@@ -104,20 +156,28 @@ export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
       const top = Math.floor(ne.y)
       const width = Math.ceil(ne.x - sw.x)
       const height = Math.ceil(sw.y - ne.y)
-
       if (width <= 0 || height <= 0) return
 
-      // Position canvas to cover exactly the visible viewport.
+      // Reposition the visible canvas to cover the current viewport exactly.
       this._canvas.style.left = `${left}px`
       this._canvas.style.top = `${top}px`
       this._canvas.width = width
       this._canvas.height = height
 
-      // ── Step 1: build intensity map ────────────────────────────────────────
-      const offscreen = document.createElement('canvas')
-      offscreen.width = width
-      offscreen.height = height
-      const ictx = offscreen.getContext('2d')!
+      // Resize offscreen canvases only when the viewport size changes.
+      if (this._intensityCanvas.width !== width || this._intensityCanvas.height !== height) {
+        this._intensityCanvas.width = width
+        this._intensityCanvas.height = height
+        this._colorCanvas.width = width
+        this._colorCanvas.height = height
+      }
+
+      const centerLat = map.getCenter()?.lat() ?? 14.5995
+      const r = metersToPixels(radiusMeters, zoom, centerLat)
+
+      // ── Step 1: paint intensity map ────────────────────────────────────────
+      const ictx = this._intensityCanvas.getContext('2d')!
+      ictx.clearRect(0, 0, width, height)
 
       for (const pt of this._points) {
         const pixel = projection.fromLatLngToDivPixel(new google.maps.LatLng(pt.lat, pt.lng))
@@ -125,12 +185,9 @@ export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
 
         const x = pixel.x - left
         const y = pixel.y - top
-        const r = radius
-
         if (x < -r || x > width + r || y < -r || y > height + r) continue
 
         const grad = ictx.createRadialGradient(x, y, 0, x, y, r)
-        // Cap at 0.8 so a single point never fully saturates the colour ramp.
         const alpha = Math.min(pt.weight, 0.8)
         grad.addColorStop(0, `rgba(0,0,0,${alpha})`)
         grad.addColorStop(1, 'rgba(0,0,0,0)')
@@ -141,14 +198,14 @@ export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
         ictx.fill()
       }
 
-      // ── Step 2: apply colour ramp ──────────────────────────────────────────
+      // ── Step 2: apply colour ramp via lookup table ─────────────────────────
       const imageData = ictx.getImageData(0, 0, width, height)
       const data = imageData.data
 
       for (let i = 3; i < data.length; i += 4) {
-        const alpha = data[i] as number
-        if (alpha > 0) {
-          const base = alpha * 4
+        const a = data[i] as number
+        if (a > 0) {
+          const base = a * 4
           data[i - 3] = colorRamp[base] as number
           data[i - 2] = colorRamp[base + 1] as number
           data[i - 1] = colorRamp[base + 2] as number
@@ -156,31 +213,29 @@ export function createHeatmapOverlay(options: CanvasHeatmapOptions = {}) {
         }
       }
 
-      // ── Step 3: paint to visible canvas ───────────────────────────────────
+      // ── Step 3: composite onto visible canvas with opacity ─────────────────
+      // putImageData ignores globalAlpha so we write to _colorCanvas first,
+      // then use drawImage (which does respect globalAlpha) on the visible canvas.
+      this._colorCanvas.getContext('2d')!.putImageData(imageData, 0, 0)
+
       const ctx = this._canvas.getContext('2d')!
       ctx.clearRect(0, 0, width, height)
       ctx.globalAlpha = opacity
-      ctx.putImageData(imageData, 0, 0)
-    }
-
-    onRemove(): void {
-      this._canvas.parentNode?.removeChild(this._canvas)
+      ctx.drawImage(this._colorCanvas, 0, 0)
     }
 
     setData(points: RawHeatmapPoint[]): void {
       this._points = points
-      this.draw()
+      this._scheduleFrame()
     }
 
     clearData(): void {
       this._points = []
-      const ctx = this._canvas.getContext('2d')
-      if (ctx) ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
+      this._canvas.getContext('2d')?.clearRect(0, 0, this._canvas.width, this._canvas.height)
     }
   }
 
   return new HeatmapOverlay()
 }
 
-// Convenience type so callers can type their ref without importing the class.
 export type HeatmapOverlayInstance = ReturnType<typeof createHeatmapOverlay>

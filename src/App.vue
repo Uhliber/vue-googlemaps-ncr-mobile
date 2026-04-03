@@ -6,9 +6,19 @@ import Legend from '@/components/Legend.vue'
 import { useSignals } from '@/composables/useSignals'
 import { NETWORK_LABELS } from '@/types/signal'
 
-const { activeNetwork, signals, isLoading, error, selectNetwork } = useSignals('globe')
+const {
+  activeNetwork,
+  signals,
+  liveSignals,
+  showResearch,
+  isLoading,
+  error,
+  dataSource,
+  selectNetwork,
+} = useSignals('globe')
 
 const signalCount = computed(() => signals.value.length)
+const hasLiveData = computed(() => liveSignals.value.length > 0)
 </script>
 
 <template>
@@ -36,15 +46,37 @@ const signalCount = computed(() => signals.value.length)
         </div>
       </div>
 
-      <!-- Status badge -->
+      <!-- Status badges -->
       <div class="flex items-center gap-2">
+        <!-- Data source badge -->
+        <Transition name="fade-badge">
+          <div
+            v-if="dataSource && !isLoading"
+            :class="[
+              'hidden sm:flex items-center gap-1.5 text-xs font-medium rounded-full px-3 py-1 border transition-colors duration-300',
+              dataSource === 'live'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                : 'bg-amber-50 border-amber-200 text-amber-700',
+            ]"
+          >
+            <span
+              :class="[
+                'w-1.5 h-1.5 rounded-full flex-shrink-0',
+                dataSource === 'live' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400',
+              ]"
+            />
+            {{ dataSource === 'live' ? 'OpenCelliD · Apr 2026' : 'Research-based' }}
+          </div>
+        </Transition>
+
+        <!-- Point count badge -->
         <div
           class="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-3 py-1"
         >
           <span
             :class="[
               'w-1.5 h-1.5 rounded-full',
-              isLoading ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400',
+              isLoading ? 'bg-amber-400 animate-pulse' : 'bg-slate-400',
             ]"
           />
           <span>{{ isLoading ? 'Loading…' : `${signalCount} points` }}</span>
@@ -64,6 +96,27 @@ const signalCount = computed(() => signals.value.length)
         :is-loading="isLoading"
         @select="selectNetwork"
       />
+
+      <!-- Research overlay toggle — only shown when live data is available -->
+      <template v-if="hasLiveData">
+        <div class="w-px h-5 bg-slate-200 flex-shrink-0" />
+        <button
+          class="flex items-center gap-2 text-xs font-medium whitespace-nowrap select-none focus:outline-none"
+          :class="showResearch ? 'text-slate-700' : 'text-slate-400'"
+          @click="showResearch = !showResearch"
+        >
+          <span
+            class="relative inline-flex w-8 h-4 rounded-full transition-colors duration-200 flex-shrink-0"
+            :class="showResearch ? 'bg-indigo-500' : 'bg-slate-300'"
+          >
+            <span
+              class="absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform duration-200"
+              :class="showResearch ? 'translate-x-4' : 'translate-x-0'"
+            />
+          </span>
+          Research overlay
+        </button>
+      </template>
     </div>
 
     <!-- Error banner -->
@@ -135,5 +188,17 @@ const signalCount = computed(() => signals.value.length)
 .pop-leave-to {
   opacity: 0;
   transform: translateX(-50%) scale(0.92);
+}
+
+.fade-badge-enter-active,
+.fade-badge-leave-active {
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+.fade-badge-enter-from,
+.fade-badge-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>
